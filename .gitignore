@@ -36,3 +36,10 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+# Runtime / generated files
+derby.log
+happyShopDB/
+orders/ordered/
+orders/progressing/
+orders/collected/
