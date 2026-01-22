@@ -1,5 +1,7 @@
 package ci553.happyshop.client.customer;
 
+import ci553.happyshop.catalogue.InsufficientStockException;
+import ci553.happyshop.catalogue.InvalidOrderQuantityException;
 import ci553.happyshop.catalogue.Order;
 import ci553.happyshop.catalogue.Product;
 import ci553.happyshop.orderManagement.OrderHub;
@@ -31,6 +33,9 @@ public class CustomerModel {
     private String displayLaSearchResult = "No Product was searched yet";
     private String displayTaTrolley = "";
     private String displayTaReceipt = "";
+
+    // Notifier for removed products at checkout
+    private RemoveProductNotifier removeNotifier = new RemoveProductNotifier();
 
     // SELECT productID, description, image, unitPrice, inStock quantity
     void search() throws SQLException {
@@ -93,20 +98,47 @@ public class CustomerModel {
         // Group trolley so each product ID is checked once with the correct quantity
         ArrayList<Product> groupedTrolley = groupProductsById(trolley);
 
-        // Step 1: Validate stock (no DB update here)
-        ArrayList<Product> insufficientProducts = validateStockAvailability(groupedTrolley);
+        try {
+            // Step 1: Validate stock (no DB update here)
+            validateStockAvailability(groupedTrolley);
 
-        if (!insufficientProducts.isEmpty()) {
-            // Build an error message
-            StringBuilder errorMsg = new StringBuilder();
-            for (Product p : insufficientProducts) {
-                errorMsg.append("\u2022 ").append(p.getProductId()).append(", ")
-                        .append(p.getProductDescription()).append(" (Only ")
-                        .append(p.getStockQuantity()).append(" available, ")
-                        .append(p.getOrderedQuantity()).append(" requested)\n");
+            // Step 2: Commit purchase (update DB stock)
+            // Defensive: stock could change after validation
+            ArrayList<Product> purchaseFailed = databaseRW.purchaseStocks(groupedTrolley);
+
+            if (!purchaseFailed.isEmpty()) {
+                throw new InsufficientStockException("Stock changed during checkout.", purchaseFailed);
             }
 
-            theProduct = null;
+            // Step 3: Create a new order only after stock update succeeds
+            OrderHub orderHub = OrderHub.getOrderHub();
+            Order theOrder = orderHub.newOrder(trolley);
+
+            trolley.clear();
+            displayTaTrolley = "";
+
+            // Close notifier if it's open
+            if (cusView != null) {
+                removeNotifier.closeNotifierWindow();
+            }
+
+            displayTaReceipt = String.format(
+                    "Order_ID: %s\nOrdered_Date_Time: %s\n%s",
+                    theOrder.getOrderId(),
+                    theOrder.getOrderedDateTime(),
+                    ProductListFormatter.buildString(theOrder.getProductList())
+            );
+
+            System.out.println(displayTaReceipt);
+            updateView();
+
+        } catch (InvalidOrderQuantityException e) {
+            displayLaSearchResult = "Checkout failed: " + e.getMessage();
+            System.out.println("Checkout blocked: invalid quantity");
+            updateView();
+
+        } catch (InsufficientStockException e) {
+            ArrayList<Product> insufficientProducts = e.getInsufficientProducts();
 
             // Remove items that cannot be bought
             removeInsufficientProductsFromTrolley(insufficientProducts);
@@ -115,63 +147,31 @@ public class CustomerModel {
             Collections.sort(trolley);
             displayTaTrolley = ProductListFormatter.buildString(trolley);
 
-            // Keep message in label for now
-            displayLaSearchResult = "Checkout failed due to insufficient stock for the following products:\n" + errorMsg;
-            System.out.println("Checkout blocked: insufficient stock");
-
-            updateView();
-            return;
-        }
-
-        // Step 2: Commit purchase (update DB stock)
-        // This should normally succeed because we just validated, but we keep it defensive.
-        ArrayList<Product> purchaseFailed = databaseRW.purchaseStocks(groupedTrolley);
-
-        if (!purchaseFailed.isEmpty()) {
-            // If stock changed since validation, handle it safely
-            StringBuilder errorMsg = new StringBuilder();
-            for (Product p : purchaseFailed) {
-                errorMsg.append("\u2022 ").append(p.getProductId()).append(", ")
+            // Build message for notifier
+            StringBuilder msg = new StringBuilder();
+            for (Product p : insufficientProducts) {
+                msg.append("\u2022 ").append(p.getProductId()).append(", ")
                         .append(p.getProductDescription()).append(" (Only ")
                         .append(p.getStockQuantity()).append(" available, ")
                         .append(p.getOrderedQuantity()).append(" requested)\n");
             }
 
             theProduct = null;
+            displayLaSearchResult = "Checkout failed due to insufficient stock.";
+            System.out.println("Checkout blocked: insufficient stock");
 
-            removeInsufficientProductsFromTrolley(purchaseFailed);
-
-            Collections.sort(trolley);
-            displayTaTrolley = ProductListFormatter.buildString(trolley);
-
-            displayLaSearchResult = "Checkout failed because stock changed during checkout:\n" + errorMsg;
-            System.out.println("Checkout failed: stock changed after validation");
+            // Show notifier window only if UI exists
+            if (cusView != null) {
+                removeNotifier.cusView = cusView;
+                removeNotifier.showRemovalMsg(msg.toString());
+            }
 
             updateView();
-            return;
         }
-
-        // Create a new order only after stock has been updated successfully
-        OrderHub orderHub = OrderHub.getOrderHub();
-        Order theOrder = orderHub.newOrder(trolley);
-
-        trolley.clear();
-        displayTaTrolley = "";
-
-        displayTaReceipt = String.format(
-                "Order_ID: %s\nOrdered_Date_Time: %s\n%s",
-                theOrder.getOrderId(),
-                theOrder.getOrderedDateTime(),
-                ProductListFormatter.buildString(theOrder.getProductList())
-        );
-
-        System.out.println(displayTaReceipt);
-        updateView();
     }
 
-    /**
-     * Groups products by productId to optimise stock checking.
-     */
+
+     // Groups products by productId to optimise stock checking.
     private ArrayList<Product> groupProductsById(ArrayList<Product> proList) {
         Map<String, Product> grouped = new HashMap<>();
 
@@ -201,12 +201,12 @@ public class CustomerModel {
         return new ArrayList<>(grouped.values());
     }
 
-    // -------------------------
-    // Feature 2: Stock validation
-    // -------------------------
 
-    // Check stock in the database without updating anything
-    private ArrayList<Product> validateStockAvailability(ArrayList<Product> groupedTrolley) throws SQLException {
+    // Feature 3: Domain exceptions
+    // Check stock in the database without updating anything (throws domain exceptions)
+    private void validateStockAvailability(ArrayList<Product> groupedTrolley)
+            throws SQLException, InvalidOrderQuantityException, InsufficientStockException {
+
         ArrayList<Product> insufficient = new ArrayList<>();
 
         for (Product requested : groupedTrolley) {
@@ -216,6 +216,11 @@ public class CustomerModel {
 
             String id = requested.getProductId();
             int requestedQty = requested.getOrderedQuantity();
+
+            // Quantity check (domain rule)
+            if (requestedQty <= 0) {
+                throw new InvalidOrderQuantityException(id, requestedQty);
+            }
 
             Product dbProduct = databaseRW.searchByProductId(id);
 
@@ -240,13 +245,12 @@ public class CustomerModel {
             }
         }
 
-        return insufficient;
+        if (!insufficient.isEmpty()) {
+            throw new InsufficientStockException("Insufficient stock for one or more items.", insufficient);
+        }
     }
 
-    // -------------------------
-    // Organised trolley helpers
-    // -------------------------
-
+    // Organised trolley helper
     // Add product or merge quantity if it already exists
     private void addOrMergeProduct(Product productToAdd) {
         String id = productToAdd.getProductId();
@@ -299,7 +303,7 @@ public class CustomerModel {
 
             String badId = insufficient.getProductId();
 
-            // Remove any matching items (loop style, beginner friendly)
+            // Remove any matching items
             for (int i = trolley.size() - 1; i >= 0; i--) {
                 Product inTrolley = trolley.get(i);
                 if (inTrolley != null && badId.equals(inTrolley.getProductId())) {
@@ -312,6 +316,12 @@ public class CustomerModel {
     void cancel() {
         trolley.clear();
         displayTaTrolley = "";
+
+        // Close notifier if it is open
+        if (cusView != null) {
+            removeNotifier.closeNotifierWindow();
+        }
+
         updateView();
     }
 
@@ -322,7 +332,9 @@ public class CustomerModel {
     void updateView() {
         if (cusView == null) {
             return;
-        }if (theProduct != null) {
+        }
+
+        if (theProduct != null) {
             imageName = theProduct.getProductImageName();
             String relativeImageUrl = StorageLocation.imageFolder + imageName;
 
