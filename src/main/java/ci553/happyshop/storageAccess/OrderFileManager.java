@@ -23,7 +23,7 @@ public class OrderFileManager {
     // Creates a new order file in the specified directory with the given content.
     public static void createOrderFile(Path dir, int orderId, String orderDetail) throws IOException {
         String orderFileName = String.valueOf(orderId) + ".txt";
-        Path path = dir.resolve(orderFileName); // e.g. orders/ordered/12.txt
+        Path path = dir.resolve(orderFileName);
 
         // Make sure the folder exists first
         Files.createDirectories(dir);

@@ -71,10 +71,7 @@ public class Order {
         );
     }
 
-    // -------------------------
     // Organised trolley logic
-    // -------------------------
-
     // Merge duplicates and sort for consistent output
     private ArrayList<Product> buildOrganisedProductList(ArrayList<Product> inputList) {
         ArrayList<Product> organised = new ArrayList<>();
