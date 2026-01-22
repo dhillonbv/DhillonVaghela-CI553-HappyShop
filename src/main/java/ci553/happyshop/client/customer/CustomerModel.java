@@ -259,4 +259,12 @@ public class CustomerModel {
     public ArrayList<Product> getTrolley() {
         return trolley;
     }
+    // For unit tests only: adds a product without using the UI flow
+    void addProductToTrolleyForTest(Product product) {
+        if (product == null) {
+            return;
+        }
+        addOrMergeProduct(product);
+        Collections.sort(trolley);
+    }
 }
