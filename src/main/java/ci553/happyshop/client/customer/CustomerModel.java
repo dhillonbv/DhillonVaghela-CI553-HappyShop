@@ -320,7 +320,9 @@ public class CustomerModel {
     }
 
     void updateView() {
-        if (theProduct != null) {
+        if (cusView == null) {
+            return;
+        }if (theProduct != null) {
             imageName = theProduct.getProductImageName();
             String relativeImageUrl = StorageLocation.imageFolder + imageName;
 
